@@ -443,3 +443,13 @@ def test_rate_limit_middleware_429_and_health_exempt():
     for _ in range(3):
         sh = _drive(mw, {"type": "http", "path": "/healthz", "headers": [], "client": ("1.2.3.4", 5)})
         assert sh[0]["status"] == 200
+
+
+def test_resolve_port_priority(monkeypatch):
+    monkeypatch.delenv("SECURITY_MCP_PORT", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+    assert remote._resolve_port() == 8000           # 기본
+    monkeypatch.setenv("PORT", "10000")
+    assert remote._resolve_port() == 10000          # PaaS(PORT) 자동 사용
+    monkeypatch.setenv("SECURITY_MCP_PORT", "9999")
+    assert remote._resolve_port() == 9999           # 명시 SECURITY_MCP_PORT 우선

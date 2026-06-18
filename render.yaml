@@ -1,0 +1,16 @@
+# Render 블루프린트 — Docker 이미지로 원격 MCP 서버를 띄운다(자동 HTTPS).
+# 절차:
+#   1) 이 repo를 GitHub에 둔 상태에서 Render 대시보드 → New + → Blueprint → 이 repo 선택
+#   2) 배포되면 엔드포인트는  https://<service-name>.onrender.com/mcp
+#   3) SECURITY_MCP_TOKEN은 Render가 자동 생성 → 대시보드 Environment에서 값을 복사해
+#      클라이언트(examples/.mcp.remote.json)의 Authorization: Bearer <토큰> 에 넣는다.
+# (TRANSPORT=streamable-http·HOST=0.0.0.0은 Dockerfile 기본값, PORT는 Render가 주입 → 코드가 자동 사용.)
+services:
+  - type: web
+    name: security-mcp
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: SECURITY_MCP_TOKEN
+        generateValue: true   # Render가 안전한 랜덤 토큰 생성(대시보드에서 확인)

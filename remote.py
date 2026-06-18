@@ -4,8 +4,8 @@
 기본은 stdio(로컬 MCP 클라이언트가 실행). 환경변수로 원격 HTTP 모드를 켠다:
   SECURITY_MCP_TRANSPORT     = stdio(기본) | streamable-http | http(별칭) | sse
   SECURITY_MCP_TOKEN         = (HTTP/SSE 필수) 공유 Bearer 토큰. 쉼표로 여러 개 = 무중단 회전(old,new)
-  SECURITY_MCP_HOST          = 바인드 호스트(기본 127.0.0.1)
-  SECURITY_MCP_PORT          = 포트(기본 8000)
+  SECURITY_MCP_HOST          = 바인드 호스트(기본 127.0.0.1; 컨테이너는 0.0.0.0)
+  SECURITY_MCP_PORT          = 포트(기본 8000; 미설정 시 PaaS의 PORT 환경변수를 자동 사용 — Render/Heroku 등)
   SECURITY_MCP_RATE_LIMIT    = IP별 윈도우당 요청 수(기본 120, 0=끔)
   SECURITY_MCP_RATE_WINDOW   = 레이트리밋 윈도우 초(기본 60)
   SECURITY_MCP_ALLOWED_HOSTS = (선택) 쉼표구분. 설정 시 DNS-rebinding 보호 ON.
@@ -50,6 +50,14 @@ def token_ok(auth_header: str, expected) -> bool:
         if t and hmac.compare_digest(presented, t):
             ok = True  # 단락 없이 모든 후보를 검사(어느 토큰이 맞았는지 타이밍 누출 최소화)
     return ok
+
+
+def _resolve_port() -> int:
+    """포트 우선순위: SECURITY_MCP_PORT > PORT(PaaS 관례) > 8000.
+
+    Render/Heroku 등은 런타임에 PORT를 주입하고 거기로 라우팅한다 — 그대로 받게 한다.
+    """
+    return int(os.environ.get("SECURITY_MCP_PORT") or os.environ.get("PORT") or "8000")
 
 
 def transport_security_from_env():
@@ -161,7 +169,7 @@ def serve(mcp) -> None:
     if not tokens:
         raise SystemExit("원격 transport에는 SECURITY_MCP_TOKEN(공유 Bearer 토큰, 쉼표로 여러 개 가능)이 필요합니다.")
     host = os.environ.get("SECURITY_MCP_HOST", "127.0.0.1")
-    port = int(os.environ.get("SECURITY_MCP_PORT", "8000"))
+    port = _resolve_port()
 
     if transport in ("streamable-http", "http"):
         app = mcp.streamable_http_app()

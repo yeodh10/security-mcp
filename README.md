@@ -81,10 +81,15 @@ docker build -t security-mcp .
 docker run -p 8000:8000 -e SECURITY_MCP_TOKEN=$(openssl rand -hex 24) security-mcp
 ```
 이미지는 HTTP 모드가 기본이고 **토큰은 런타임 주입**(이미지에 안 굽음, 토큰 없으면 시작 거부=fail-closed).
-`/healthz` 기반 HEALTHCHECK·비루트 실행 포함. 어떤 컨테이너 호스트(Fly.io·Render·Railway·VPS 등)에도 올릴 수 있고,
-**실제 공개 URL은 본인 호스팅 계정에서** 띄우는 단계입니다(이 repo는 거기까지의 이미지·설정을 제공).
+`/healthz` 기반 HEALTHCHECK·비루트 실행 포함. 포트는 `SECURITY_MCP_PORT > PORT > 8000` 순으로 해석해 PaaS 호환.
 
-> **정직:** Dockerfile은 제공하지만 빌드 환경이 없어 *이미지 빌드 자체는 이 repo에서 미검증*입니다. 단, 컨테이너가 실행할 HTTP 런타임은 `smoke_http.py`로 라이브 검증됨.
+### ☁️ Render 한 방 배포 (`render.yaml`)
+공개 HTTPS URL이 자동으로 붙는 가장 쉬운 경로:
+1. 이 repo를 GitHub에 둔 상태로 **Render → New + → Blueprint → 이 repo 선택**.
+2. 배포되면 엔드포인트는 `https://<service>.onrender.com/mcp` (TLS 자동).
+3. `SECURITY_MCP_TOKEN`은 Render가 **자동 생성** → 대시보드 Environment에서 값을 복사해 클라이언트의 `Authorization: Bearer`에 사용.
+
+> **정직:** Dockerfile/`render.yaml`은 제공하지만 *빌드·실제 배포는 본인 호스팅 계정에서* 하는 단계라 이 repo에선 미검증입니다(컨테이너가 실행할 HTTP 런타임 자체는 `smoke_http.py`로 라이브 검증됨). Fly.io·Railway·VPS 등 다른 호스트에도 같은 이미지로 올릴 수 있습니다.
 
 ## 🧪 검증
 
@@ -105,6 +110,7 @@ versions.py   버전 비교·영향 판정         ┘
 enrich.py     KEV(실제 악용)·EPSS(악용 확률) 위협 인텔 + 디스크 캐시(재시작 생존)
 remote.py     원격 transport(HTTP/SSE) + Bearer 인증 + 토큰 회전 + 레이트리밋
 Dockerfile    원격 HTTP 컨테이너 이미지(토큰 런타임 주입·비루트·healthcheck)
+render.yaml   Render 블루프린트(repo 연결 → 자동 HTTPS·토큰 자동생성)
 examples/     Claude Desktop / Claude Code 설정 예시(로컬 stdio · 원격 http)
 tests/        pytest (네트워크 없이 결정적, 42개) · requirements-dev.txt
 smoke_mcp.py / smoke_http.py   stdio · 원격 HTTP 프로토콜 스모크
