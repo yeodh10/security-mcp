@@ -1,0 +1,3 @@
+# 개발/검증 전용 의존성 (런타임 아님 — 런타임은 requirements.txt = mcp 만).
+# 설치:  venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+pytest>=8.0
