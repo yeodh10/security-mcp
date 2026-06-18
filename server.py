@@ -20,6 +20,7 @@ from mcp.server.fastmcp import FastMCP
 
 import cve
 import enrich
+import llm_judge
 import rules
 import versions
 
@@ -27,18 +28,23 @@ mcp = FastMCP("security-tools")
 
 
 @mcp.tool()
-def scan_prompt_injection(text: str) -> dict:
+def scan_prompt_injection(text: str, use_llm: bool = True) -> dict:
     """사용자 입력/프롬프트에 프롬프트 인젝션·탈옥(jailbreak) 시도가 있는지 검사한다.
 
-    신뢰할 수 없는 사용자 입력을 LLM에 전달하기 전에 점검할 때 사용. 룰/시그니처 +
-    역난독화(리트스피크·제로폭·동형문자·base64/hex/ROT13)로 동작하며 키가 필요 없다.
+    신뢰할 수 없는 사용자 입력을 LLM에 전달하기 전에 점검할 때 사용. 1차로 룰/시그니처 +
+    역난독화(리트스피크·제로폭·동형문자·base64/hex/ROT13)로 동작하며 키 없이 작동한다.
+    ANTHROPIC_API_KEY가 있고 use_llm=True면, 룰이 '확정 차단'하지 못한 입력에 한해 2차 LLM
+    판정을 덧붙여 룰이 놓치는 다국어·의미 패러프레이즈를 보완한다(LLM은 의심을 올리기만 함).
 
     Args:
         text: 검사할 입력 텍스트.
+        use_llm: 2차 LLM 판정 사용 여부(기본 True). 키가 없으면 자동으로 룰 단독 동작.
+            이미 룰이 block한 입력은 비용 절감을 위해 LLM을 호출하지 않는다.
 
     Returns:
         decision(block|review|allow), risk_score(0~100), is_malicious,
         matched_categories(공격 유형), evidence(원문 내 의심 구간), note(한계 고지).
+        2차 LLM이 동작하면 llm(판정 상세)·llm_escalated(상향 여부) 추가.
     """
     text = text or ""
     r = rules.scan(text)
@@ -49,7 +55,8 @@ def scan_prompt_injection(text: str) -> dict:
         decision = "review"
     else:
         decision = "allow"
-    return {
+
+    out = {
         "decision": decision,
         "risk_score": r["score"],
         "is_malicious": decision != "allow",
@@ -57,8 +64,30 @@ def scan_prompt_injection(text: str) -> dict:
         "evidence": [text[s["start"]:s["end"]] for s in spans][:8],
         "signals": r["signals"],
         "note": "1차 룰 레이어(역난독화 포함). 다국어·의미 패러프레이즈는 놓칠 수 있어, "
-                "고위험 맥락에선 2차 LLM 판정을 함께 쓰는 것이 좋다.",
+                "고위험 맥락에선 2차 LLM 판정(use_llm)을 함께 쓰는 것이 좋다. "
+                "llm 필드로 2차 레이어 동작 여부를 확인할 수 있다.",
     }
+
+    # 2차 LLM 레이어 — 룰이 '확정 차단'(block)하지 못했고 키가 있을 때만.
+    #   · 이미 block이면 호출 생략(비용 절감). · LLM은 의심을 '올리기만' 함(block→allow 같은 강등 없음).
+    if use_llm and decision != "block":
+        if llm_judge.available():
+            verdict = llm_judge.judge(text)
+            out["llm"] = verdict
+            if verdict.get("ran") and verdict.get("is_injection"):
+                conf = verdict.get("confidence") or 0
+                if decision == "review" and conf >= 0.8:
+                    decision = "block"            # 룰이 이미 의심 + LLM 고확신 → 차단
+                elif decision == "allow":
+                    decision = "review"           # 룰은 못 봤지만 LLM이 의심 → 사람 확인으로
+                out["decision"] = decision
+                out["is_malicious"] = decision != "allow"
+                out["llm_escalated"] = True
+        else:
+            out["llm"] = {"available": False, "ran": False,
+                          "note": "ANTHROPIC_API_KEY 없음 — LLM 레이어 꺼짐(룰 단독 동작)."}
+
+    return out
 
 
 @mcp.tool()
