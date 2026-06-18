@@ -70,13 +70,26 @@ venv/Scripts/python.exe server.py        # 이제 /mcp 는 Authorization: Bearer
 ```
 - 토큰 없는 요청 → **401**. `/healthz` → 200(인증 면제, liveness). 토큰 비교는 상수시간(`hmac`).
 - 클라이언트 연결: `examples/.mcp.remote.json`(Claude Code `type:"http"` + `Authorization` 헤더).
+- **토큰 회전**: `SECURITY_MCP_TOKEN=old,new`처럼 쉼표로 여러 개 = 무중단 회전(클라이언트 이전 후 old 제거).
+- **레이트리밋**: IP별 고정 윈도우(`SECURITY_MCP_RATE_LIMIT` 기본 120 / `SECURITY_MCP_RATE_WINDOW` 60초, 0=끔). 초과 → 429.
 - `SECURITY_MCP_ALLOWED_HOSTS` 설정 시 DNS-rebinding 보호 ON. `sse`도 `SECURITY_MCP_TRANSPORT=sse`로 선택 가능.
 - **HTTP 트랜스포트는 `mcp`가 이미 끌어온 uvicorn을 *HTTP 모드에서만* lazy import** — stdio·의존성에 영향 없음.
+
+### 🐳 컨테이너 배포
+```bash
+docker build -t security-mcp .
+docker run -p 8000:8000 -e SECURITY_MCP_TOKEN=$(openssl rand -hex 24) security-mcp
+```
+이미지는 HTTP 모드가 기본이고 **토큰은 런타임 주입**(이미지에 안 굽음, 토큰 없으면 시작 거부=fail-closed).
+`/healthz` 기반 HEALTHCHECK·비루트 실행 포함. 어떤 컨테이너 호스트(Fly.io·Render·Railway·VPS 등)에도 올릴 수 있고,
+**실제 공개 URL은 본인 호스팅 계정에서** 띄우는 단계입니다(이 repo는 거기까지의 이미지·설정을 제공).
+
+> **정직:** Dockerfile은 제공하지만 빌드 환경이 없어 *이미지 빌드 자체는 이 repo에서 미검증*입니다. 단, 컨테이너가 실행할 HTTP 런타임은 `smoke_http.py`로 라이브 검증됨.
 
 ## 🧪 검증
 
 ```bash
-pip install -r requirements-dev.txt && pytest -q   # 도구 로직(인젝션·CVE·KEV/EPSS·LLM·원격 인증) — 네트워크 없이 33개
+pip install -r requirements-dev.txt && pytest -q   # 도구 로직(인젝션·CVE·KEV/EPSS·LLM·원격 인증·캐시·레이트리밋) — 네트워크 없이 42개
 python smoke_mcp.py                                # stdio 프로토콜로 tools·resources·prompts 확인
 python smoke_http.py                               # 원격 HTTP: 401(무토큰)·200(healthz)·인증 핸드셰이크
 ```
@@ -89,10 +102,11 @@ normalize.py  매칭 전 역난독화          ┘
 llm_judge.py  인젝션 2차 LLM 판정(선택, stdlib urllib — SDK 없음)
 cve.py        NVD 조회·정규화(버전 범위)  ┐ cve-radar에서 가져온 로직
 versions.py   버전 비교·영향 판정         ┘
-enrich.py     KEV(실제 악용)·EPSS(악용 확률) 위협 인텔 보강
-remote.py     원격 transport(Streamable HTTP/SSE) + 공유 Bearer 토큰 인증
+enrich.py     KEV(실제 악용)·EPSS(악용 확률) 위협 인텔 + 디스크 캐시(재시작 생존)
+remote.py     원격 transport(HTTP/SSE) + Bearer 인증 + 토큰 회전 + 레이트리밋
+Dockerfile    원격 HTTP 컨테이너 이미지(토큰 런타임 주입·비루트·healthcheck)
 examples/     Claude Desktop / Claude Code 설정 예시(로컬 stdio · 원격 http)
-tests/        pytest (네트워크 없이 결정적, 33개) · requirements-dev.txt
+tests/        pytest (네트워크 없이 결정적, 42개) · requirements-dev.txt
 smoke_mcp.py / smoke_http.py   stdio · 원격 HTTP 프로토콜 스모크
 ```
 
