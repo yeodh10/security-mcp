@@ -59,11 +59,26 @@ pip install -r requirements.txt                    # = mcp 만
 ```
 **Claude Code** — `examples/.mcp.json`을 프로젝트 루트에 두거나 `claude mcp add`. (예시는 `examples/` 참고.)
 
+## 🌐 원격 배포 (Streamable HTTP + Bearer 인증)
+
+로컬 stdio 외에, **인증이 붙은 원격 HTTP MCP 서버**로도 띄울 수 있습니다(환경변수만으로 전환, 코드 변경 없음):
+```bash
+SECURITY_MCP_TRANSPORT=streamable-http \
+SECURITY_MCP_TOKEN=$(openssl rand -hex 24) \
+SECURITY_MCP_HOST=0.0.0.0 SECURITY_MCP_PORT=8000 \
+venv/Scripts/python.exe server.py        # 이제 /mcp 는 Authorization: Bearer <토큰> 필요
+```
+- 토큰 없는 요청 → **401**. `/healthz` → 200(인증 면제, liveness). 토큰 비교는 상수시간(`hmac`).
+- 클라이언트 연결: `examples/.mcp.remote.json`(Claude Code `type:"http"` + `Authorization` 헤더).
+- `SECURITY_MCP_ALLOWED_HOSTS` 설정 시 DNS-rebinding 보호 ON. `sse`도 `SECURITY_MCP_TRANSPORT=sse`로 선택 가능.
+- **HTTP 트랜스포트는 `mcp`가 이미 끌어온 uvicorn을 *HTTP 모드에서만* lazy import** — stdio·의존성에 영향 없음.
+
 ## 🧪 검증
 
 ```bash
-pip install -r requirements-dev.txt && pytest -q   # 도구 로직(인젝션·CVE·KEV/EPSS·LLM 융합) — 네트워크 없이 27개
-python smoke_mcp.py                                # 실제 MCP stdio 프로토콜로 tools·resources·prompts 확인
+pip install -r requirements-dev.txt && pytest -q   # 도구 로직(인젝션·CVE·KEV/EPSS·LLM·원격 인증) — 네트워크 없이 33개
+python smoke_mcp.py                                # stdio 프로토콜로 tools·resources·prompts 확인
+python smoke_http.py                               # 원격 HTTP: 401(무토큰)·200(healthz)·인증 핸드셰이크
 ```
 
 ## 🏗️ 구조
@@ -75,18 +90,20 @@ llm_judge.py  인젝션 2차 LLM 판정(선택, stdlib urllib — SDK 없음)
 cve.py        NVD 조회·정규화(버전 범위)  ┐ cve-radar에서 가져온 로직
 versions.py   버전 비교·영향 판정         ┘
 enrich.py     KEV(실제 악용)·EPSS(악용 확률) 위협 인텔 보강
-examples/     Claude Desktop / Claude Code 설정 예시
-tests/        pytest (네트워크 없이 결정적, 27개) · requirements-dev.txt
+remote.py     원격 transport(Streamable HTTP/SSE) + 공유 Bearer 토큰 인증
+examples/     Claude Desktop / Claude Code 설정 예시(로컬 stdio · 원격 http)
+tests/        pytest (네트워크 없이 결정적, 33개) · requirements-dev.txt
+smoke_mcp.py / smoke_http.py   stdio · 원격 HTTP 프로토콜 스모크
 ```
 
 ## ⚠️ 정직한 한계
 - **인젝션 검사**: 룰+역난독화라 *난독화* 우회는 막지만 **다국어·의미 패러프레이즈는 놓침**. 2차 LLM 레이어가 이를 보강하지만 **선택(키 필요)**이고 LLM도 오탐·미탐이 있으며 비용·지연이 따름. 도구 출력 `note`에 고지.
 - **CVE 도구**: NVD(미국·영어)에 의존, 일시 장애(503) 시 에러 반환. 제품 *식별*은 키워드 수준이라 동명이품 혼입 가능. 버전 비교는 점-구분 버전용 실용 비교.
 - **KEV/EPSS**: KEV '없음'은 '안전'이 아니라 '미관측'일 수 있고, EPSS는 확률 추정치(관측 아님). 조회 실패 시 에러로 막지 않고 '판단 보류'로 강등.
-- 인증·레이트리밋 없음(로컬 stdio 도구). 출력측 방어·다중 소스(KISA 등) 미구현.
+- **원격 인증**: 단일 공유 Bearer 토큰(멀티테넌트·스코프·회전 없음). TLS는 앞단(reverse proxy)에서. 레이트리밋 미구현. 출력측 방어·다중 소스(KISA 등) 미구현.
 
 ## 🛠️ 기술 스택
-Python · **Model Context Protocol (FastMCP — tools·resources·prompts)** · NVD CVE API 2.0 · CISA KEV · FIRST EPSS ·
-(선택) Anthropic Messages API · 런타임 의존성은 `mcp` 하나(나머지 stdlib)
+Python · **Model Context Protocol (FastMCP — tools·resources·prompts, stdio + Streamable HTTP/SSE)** ·
+NVD CVE API 2.0 · CISA KEV · FIRST EPSS · (선택) Anthropic Messages API · 런타임 의존성은 `mcp` 하나(나머지 stdlib)
 
 > 보안 솔루션 회사 영업/SE 직무 지원용 포트폴리오. 주제: 에이전트형 AI 보안 도구(MCP).

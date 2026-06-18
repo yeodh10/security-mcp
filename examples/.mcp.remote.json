@@ -1,0 +1,12 @@
+{
+  "_comment": "원격(Streamable HTTP) 모드로 띄운 서버에 Claude Code가 붙는 예시. 서버는 SECURITY_MCP_TRANSPORT=streamable-http SECURITY_MCP_TOKEN=<토큰> 으로 실행. url의 호스트/포트와 Authorization 토큰을 실제 값으로 바꿔 사용. (로컬 stdio는 .mcp.json 참고.)",
+  "mcpServers": {
+    "security-tools-remote": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer CHANGE_ME_SHARED_TOKEN"
+      }
+    }
+  }
+}

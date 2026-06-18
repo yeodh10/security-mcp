@@ -23,10 +23,12 @@ from mcp.server.fastmcp import FastMCP
 import cve
 import enrich
 import llm_judge
+import remote
 import rules
 import versions
 
-mcp = FastMCP("security-tools")
+# transport_security: 원격 HTTP 모드의 DNS-rebinding 보호(SECURITY_MCP_ALLOWED_HOSTS). 미설정 시 None=기본.
+mcp = FastMCP("security-tools", transport_security=remote.transport_security_from_env())
 
 
 @mcp.tool()
@@ -286,4 +288,4 @@ def review_untrusted_input(text: str) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    remote.serve(mcp)  # 기본 stdio, 환경변수로 인증된 원격 HTTP/SSE 전환(remote.py 참고)

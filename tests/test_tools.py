@@ -3,9 +3,12 @@ MCP 도구 테스트 — 네트워크 없이 결정적으로(인젝션 검사 + 
 실제 MCP stdio 프로토콜 검증은 smoke_mcp.py 참고.
 """
 
+import asyncio
+
 import cve
 import enrich
 import llm_judge
+import remote
 import rules
 import server
 
@@ -238,3 +241,84 @@ def test_server_registers_resources_and_prompts():
     assert server.mcp is not None
     _json.dumps(server.injection_catalog())
     _json.dumps(server.limits_doc())
+
+
+# ── 원격 transport 인증(in-process ASGI, 네트워크 없음) ─────────
+def _drive(mw, scope):
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(m):
+        sent.append(m)
+
+    asyncio.run(mw(scope, receive, send))
+    return sent
+
+
+def _http_scope(path="/mcp", headers=()):
+    return {"type": "http", "path": path, "headers": list(headers)}
+
+
+def test_token_ok_constant_time_checks():
+    assert remote.token_ok("Bearer s3cret", "s3cret")
+    assert not remote.token_ok("Bearer wrong", "s3cret")
+    assert not remote.token_ok("s3cret", "s3cret")     # Bearer 접두사 없음
+    assert not remote.token_ok("", "s3cret")
+    assert not remote.token_ok("Bearer s3cret", "")     # expected 미설정 → 거부
+
+
+def test_bearer_rejects_without_token():
+    called = []
+
+    async def inner(scope, receive, send):
+        called.append(True)
+
+    sent = _drive(remote.BearerAuthMiddleware(inner, token="secret"), _http_scope())
+    assert sent[0]["status"] == 401 and not called      # 토큰 없으면 401, inner 미호출
+
+
+def test_bearer_allows_with_valid_token():
+    called = []
+
+    async def inner(scope, receive, send):
+        called.append(True)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    sent = _drive(remote.BearerAuthMiddleware(inner, token="secret"),
+                  _http_scope(headers=[(b"authorization", b"Bearer secret")]))
+    assert called and sent[0]["status"] == 200
+
+
+def test_bearer_health_open_without_token():
+    called = []
+
+    async def inner(scope, receive, send):
+        called.append(True)
+
+    sent = _drive(remote.BearerAuthMiddleware(inner, token="secret"), _http_scope(path="/healthz"))
+    assert sent[0]["status"] == 200 and not called      # /healthz는 인증 없이 200
+
+
+def test_bearer_lifespan_passthrough():
+    seen = []
+
+    async def inner(scope, receive, send):
+        seen.append(scope["type"])
+
+    async def noop():
+        return {}
+
+    asyncio.run(remote.BearerAuthMiddleware(inner, token="x")({"type": "lifespan"}, noop, noop))
+    assert seen == ["lifespan"]                          # 비-HTTP scope는 그대로 통과(세션매니저 보존)
+
+
+def test_transport_security_env(monkeypatch):
+    monkeypatch.delenv("SECURITY_MCP_ALLOWED_HOSTS", raising=False)
+    assert remote.transport_security_from_env() is None  # 미설정 → 기본(보호 off)
+    monkeypatch.setenv("SECURITY_MCP_ALLOWED_HOSTS", "example.com, localhost:*")
+    s = remote.transport_security_from_env()
+    assert s.enable_dns_rebinding_protection is True
+    assert "example.com" in s.allowed_hosts and "localhost:*" in s.allowed_hosts
