@@ -4,6 +4,7 @@ MCP 도구 테스트 — 네트워크 없이 결정적으로(인젝션 검사 + 
 """
 
 import cve
+import enrich
 import server
 
 
@@ -64,3 +65,77 @@ def test_check_version_offline(monkeypatch):
 def test_lookup_cve_handles_missing(monkeypatch):
     monkeypatch.setattr(cve, "lookup", lambda cid: {"error": "없음"})
     assert "error" in server.lookup_cve("CVE-NOPE")
+
+
+# ── KEV / EPSS 보강(합성 픽스처, 네트워크 없음) ─────────────────
+_KEV_CATALOG = {"vulnerabilities": [
+    {"cveID": "CVE-2026-44170", "dateAdded": "2026-06-01", "dueDate": "2026-06-22",
+     "knownRansomwareCampaignUse": "Known", "vendorProject": "MariaDB", "product": "MariaDB"},
+    {"cveID": "CVE-2020-0001", "knownRansomwareCampaignUse": "Unknown"},
+]}
+_EPSS_RESP = {"data": [
+    {"cve": "CVE-2026-44170", "epss": "0.97321", "percentile": "0.999", "date": "2026-06-17"},
+]}
+
+
+def test_kev_parse_hit_and_miss():
+    hit = enrich._parse_kev(_KEV_CATALOG, "cve-2026-44170")  # 대소문자 무시
+    assert hit["in_kev"] is True and hit["known_ransomware"] is True
+    miss = enrich._parse_kev(_KEV_CATALOG, "CVE-9999-9999")
+    assert miss["in_kev"] is False
+
+
+def test_epss_parse_values_and_missing():
+    r = enrich._parse_epss(_EPSS_RESP, "CVE-2026-44170")
+    assert abs(r["epss"] - 0.97321) < 1e-9 and r["percentile"] == 0.999
+    assert enrich._parse_epss({"data": []}, "CVE-1")["epss"] is None
+
+
+def test_priority_kev_outranks_epss():
+    # KEV 등재면 EPSS가 낮아도 critical(실제 악용 우선)
+    assert enrich._priority({"in_kev": True}, {"epss": 0.01})[0] == "critical"
+
+
+def test_priority_epss_bands_and_unknown():
+    assert enrich._priority({"in_kev": False}, {"epss": 0.6})[0] == "high"
+    assert enrich._priority({"in_kev": False}, {"epss": 0.2})[0] == "medium"
+    assert enrich._priority({"in_kev": False}, {"epss": 0.01})[0] == "low"
+    # 둘 다 조회 실패 → '안전'이 아니라 'unknown'(과신 방지)
+    assert enrich._priority({"in_kev": None}, {"epss": None})[0] == "unknown"
+
+
+def test_lookup_cve_exploitation_optional(monkeypatch):
+    monkeypatch.setattr(cve, "lookup", lambda cid: cve.normalize(_RAW))
+    calls = []
+    monkeypatch.setattr(enrich, "exploitation",
+                        lambda cid: calls.append(cid) or {"exploitation_level": "critical"})
+    out = server.lookup_cve("CVE-TEST-1")
+    assert out["exploitation"]["exploitation_level"] == "critical"
+    assert calls == ["CVE-TEST-1"]
+    # include_exploitation=False면 위협 인텔 호출을 건너뛴다
+    out2 = server.lookup_cve("CVE-TEST-1", include_exploitation=False)
+    assert "exploitation" not in out2 and calls == ["CVE-TEST-1"]
+
+
+def test_find_cves_puts_kev_first(monkeypatch):
+    # search_product는 심각도순(높은 score 먼저)으로 준다고 가정
+    hi_score = {"id": "CVE-A", "cvss_score": 9.9, "description": "", "affected_cpe": [], "affected_ranges": []}
+    lo_score = {"id": "CVE-B", "cvss_score": 5.0, "description": "", "affected_cpe": [], "affected_ranges": []}
+    monkeypatch.setattr(cve, "search_product", lambda *a, **k: [hi_score, lo_score])
+    monkeypatch.setattr(enrich, "kev_flags",
+                        lambda ids: {"CVE-A": {"in_kev": False}, "CVE-B": {"in_kev": True}})
+    out = server.find_cves_for_product("x")
+    assert [c["id"] for c in out["cves"]] == ["CVE-B", "CVE-A"]  # KEV 등재(B)가 위로
+    assert out["cves"][0]["in_kev"] is True
+
+
+def test_find_cves_graceful_when_kev_unreachable(monkeypatch):
+    item = {"id": "CVE-A", "cvss_score": 9.9, "description": "", "affected_cpe": [], "affected_ranges": []}
+    monkeypatch.setattr(cve, "search_product", lambda *a, **k: [item])
+
+    def boom(ids):
+        raise RuntimeError("KEV down")
+
+    monkeypatch.setattr(enrich, "kev_flags", boom)
+    out = server.find_cves_for_product("x")
+    assert out["count"] == 1 and "KEV 조회 실패" in out["note"]  # 목록은 여전히 반환

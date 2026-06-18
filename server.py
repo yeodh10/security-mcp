@@ -19,6 +19,7 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 import cve
+import enrich
 import rules
 import versions
 
@@ -61,22 +62,29 @@ def scan_prompt_injection(text: str) -> dict:
 
 
 @mcp.tool()
-def lookup_cve(cve_id: str) -> dict:
+def lookup_cve(cve_id: str, include_exploitation: bool = True) -> dict:
     """특정 CVE의 심각도·CVSS·영향 제품/버전 범위·요약을 NVD에서 조회한다.
 
     "이 CVE 위험해?", "CVE-2026-1234 뭐야?" 같은 질문에 사용.
+    기본으로 '실제 위급도'(KEV 실제 악용·EPSS 악용 확률)도 함께 붙여, CVSS만 보고
+    과대/과소 대응하지 않게 한다.
 
     Args:
         cve_id: 예) "CVE-2026-44170".
+        include_exploitation: True면 KEV/EPSS 위협 인텔을 exploitation에 함께 담는다
+            (네트워크 1~2회 추가). 빠른 조회만 원하면 False.
 
     Returns:
         id·severity·cvss_score·description·affected_ranges·references·nvd_url 등.
         영향 버전 범위는 affected_ranges에, 사람이 읽는 요약은 affected_versions_summary에.
+        include_exploitation=True면 exploitation(kev·epss·exploitation_level·priority) 추가.
     """
     c = cve.lookup(cve_id)
     if "error" in c:
         return c
     c["affected_versions_summary"] = versions.affected_summary(c) or ["(NVD에 버전 범위 정보 없음)"]
+    if include_exploitation:
+        c["exploitation"] = enrich.exploitation(c["id"])
     return c
 
 
@@ -101,12 +109,27 @@ def find_cves_for_product(product: str, days: int = 14, max_results: int = 10) -
         return {"error": str(e), "cves": []}
     for c in items:
         c["affected_versions_summary"] = versions.affected_summary(c) or ["(범위 정보 없음)"]
+
+    # KEV 플래그(실제 악용 여부) — 카탈로그 1회 조회로 일괄. 실패해도 목록은 반환.
+    note = "제품 식별은 키워드 수준이라 동명이품(예: 여러 Apache 프로젝트)이 섞일 수 있음."
+    try:
+        flags = enrich.kev_flags([c["id"] for c in items])
+        for c in items:
+            k = flags.get(c["id"], {})
+            c["in_kev"] = k.get("in_kev")
+            if k.get("in_kev"):
+                c["kev"] = k
+        items.sort(key=lambda c: 0 if c.get("in_kev") else 1)  # KEV 먼저(심각도순은 안정 유지)
+        note += " in_kev=True는 CISA KEV 등재(실제 악용)로, CVSS보다 우선 검토 대상."
+    except RuntimeError:
+        note += " (KEV 조회 실패 — in_kev 미표시.)"
+
     return {
         "product": product,
         "days": days,
         "count": len(items),
         "cves": items,
-        "note": "제품 식별은 키워드 수준이라 동명이품(예: 여러 Apache 프로젝트)이 섞일 수 있음.",
+        "note": note,
     }
 
 
@@ -143,6 +166,7 @@ def check_cve_affects_version(cve_id: str, product: str, version: str) -> dict:
         "affected": verdict,
         "affected_ranges_summary": summ or ["(범위 정보 없음)"],
         "severity": c["severity"],
+        "exploitation": enrich.exploitation(c["id"]),
         "explanation": expl,
         "nvd_url": c["nvd_url"],
     }
