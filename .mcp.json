@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "security-tools": {
+      "command": "venv/Scripts/python.exe",
+      "args": ["server.py"]
+    }
+  }
+}

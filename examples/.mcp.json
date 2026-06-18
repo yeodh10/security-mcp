@@ -1,0 +1,9 @@
+{
+  "_comment": "Claude Code 프로젝트 설정. 이 파일을 프로젝트 루트에 .mcp.json으로 두거나, `claude mcp add` 로 등록. 세션 재시작 후 도구 사용 가능.",
+  "mcpServers": {
+    "security-tools": {
+      "command": "C:\\Claude\\security-mcp\\venv\\Scripts\\python.exe",
+      "args": ["C:\\Claude\\security-mcp\\server.py"]
+    }
+  }
+}
