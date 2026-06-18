@@ -400,3 +400,46 @@ def test_llm_failure_not_cached(monkeypatch):
     r1 = llm_judge.judge("q")               # 실패 → 보류, 캐시 안 함
     r2 = llm_judge.judge("q")               # 재시도 → 성공
     assert r1.get("inconclusive") and r2["is_injection"] is True and n["i"] == 2
+
+
+# ── 원격 하드닝: 멀티토큰 회전 · 레이트리밋(네트워크 없음) ──────
+def test_token_ok_multi_token_rotation():
+    toks = ["oldtok", "newtok"]
+    assert remote.token_ok("Bearer oldtok", toks)   # 회전 중 old 허용
+    assert remote.token_ok("Bearer newtok", toks)   # new 허용
+    assert not remote.token_ok("Bearer nope", toks)
+    assert not remote.token_ok("Bearer x", [])       # 빈 목록 → 거부
+
+
+def test_bearer_accepts_any_of_multiple_tokens():
+    called = []
+
+    async def inner(scope, receive, send):
+        called.append(True)
+
+    mw = remote.BearerAuthMiddleware(inner, token=["old", "new"])
+    _drive(mw, _http_scope(headers=[(b"authorization", b"Bearer new")]))
+    assert called                           # 멀티토큰 중 하나로 통과
+
+
+def test_rate_limiter_fixed_window():
+    rl = remote.RateLimiter(limit=2, window=60)
+    assert rl.allow("ip", 0.0) and rl.allow("ip", 1.0)              # 1,2 허용
+    assert not rl.allow("ip", 2.0)                                  # 3 → 차단
+    assert rl.allow("ip", 61.0)                                     # 윈도우 리셋 후 허용
+    assert remote.RateLimiter(limit=0, window=60).allow("ip", 0.0)  # 0 = 비활성
+
+
+def test_rate_limit_middleware_429_and_health_exempt():
+    async def inner(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    mw = remote.RateLimitMiddleware(inner, remote.RateLimiter(limit=1, window=60))
+    base = {"type": "http", "path": "/mcp", "headers": [], "client": ("1.2.3.4", 5)}
+    s1 = _drive(mw, dict(base))
+    s2 = _drive(mw, dict(base))
+    assert s1[0]["status"] == 200 and s2[0]["status"] == 429       # 두 번째는 레이트리밋
+    # /healthz는 면제 — 여러 번 호출해도 200
+    for _ in range(3):
+        sh = _drive(mw, {"type": "http", "path": "/healthz", "headers": [], "client": ("1.2.3.4", 5)})
+        assert sh[0]["status"] == 200
