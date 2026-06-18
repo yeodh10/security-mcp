@@ -322,3 +322,81 @@ def test_transport_security_env(monkeypatch):
     s = remote.transport_security_from_env()
     assert s.enable_dns_rebinding_protection is True
     assert "example.com" in s.allowed_hosts and "localhost:*" in s.allowed_hosts
+
+
+# ── 캐싱: KEV 디스크 · LLM 응답(네트워크 없음) ─────────────────
+def test_kev_disk_cache_survives_memory_reset(tmp_path, monkeypatch):
+    monkeypatch.setenv("SECURITY_MCP_CACHE_DIR", str(tmp_path))
+    enrich._kev_cache["by_id"] = None
+    enrich._kev_cache["fetched_at"] = 0.0
+    calls = []
+    monkeypatch.setattr(enrich, "_fetch_json",
+                        lambda url: calls.append(url) or {"vulnerabilities": [{"cveID": "CVE-X"}]})
+    c1 = enrich._kev_catalog()              # 네트워크 1회 + 디스크 기록
+    enrich._kev_cache["by_id"] = None        # 메모리만 비움(재시작 흉내)
+    c2 = enrich._kev_catalog()              # 디스크에서 로드 → 네트워크 추가 호출 없음
+    assert c2 == c1 and len(calls) == 1
+
+
+def test_kev_uses_stale_disk_on_network_fail(tmp_path, monkeypatch):
+    monkeypatch.setenv("SECURITY_MCP_CACHE_DIR", str(tmp_path))
+    enrich._write_disk_kev({"vulnerabilities": [{"cveID": "CVE-OLD"}]})
+    enrich._kev_cache["by_id"] = None
+    enrich._kev_cache["fetched_at"] = 0.0
+    monkeypatch.setattr(enrich, "_KEV_TTL", -1)  # 메모리·디스크 모두 stale 취급 → 네트워크 시도
+
+    def boom(url):
+        raise RuntimeError("net down")
+
+    monkeypatch.setattr(enrich, "_fetch_json", boom)
+    cat = enrich._kev_catalog()             # 네트워크 실패 → stale 디스크 폴백(가용성)
+    assert cat["vulnerabilities"][0]["cveID"] == "CVE-OLD"
+
+
+def _api_resp(is_injection):
+    payload = ('{"is_injection": %s, "confidence": 0.9, "categories": [], "reason": "x"}'
+               % ("true" if is_injection else "false"))
+    return {"content": [{"type": "text", "text": payload}], "model": "m"}
+
+
+def test_llm_cache_hit_skips_second_call(monkeypatch):
+    llm_judge._cache_clear()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("SECURITY_MCP_LLM_CACHE", "1")
+    calls = []
+    monkeypatch.setattr(llm_judge, "_call_api",
+                        lambda text, key, timeout: calls.append(text) or _api_resp(True))
+    r1 = llm_judge.judge("같은 입력")
+    r2 = llm_judge.judge("같은 입력")
+    assert r1["is_injection"] is True and r2.get("cached") is True
+    assert len(calls) == 1                  # 두 번째는 캐시 적중 → API 미호출
+
+
+def test_llm_cache_disabled_calls_every_time(monkeypatch):
+    llm_judge._cache_clear()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("SECURITY_MCP_LLM_CACHE", "0")
+    calls = []
+    monkeypatch.setattr(llm_judge, "_call_api",
+                        lambda *a: calls.append(1) or _api_resp(False))
+    llm_judge.judge("x")
+    llm_judge.judge("x")
+    assert len(calls) == 2                  # 캐시 off → 매번 호출
+
+
+def test_llm_failure_not_cached(monkeypatch):
+    llm_judge._cache_clear()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("SECURITY_MCP_LLM_CACHE", "1")
+    n = {"i": 0}
+
+    def flaky(text, key, timeout):
+        n["i"] += 1
+        if n["i"] == 1:
+            raise RuntimeError("down")
+        return _api_resp(True)
+
+    monkeypatch.setattr(llm_judge, "_call_api", flaky)
+    r1 = llm_judge.judge("q")               # 실패 → 보류, 캐시 안 함
+    r2 = llm_judge.judge("q")               # 재시도 → 성공
+    assert r1.get("inconclusive") and r2["is_injection"] is True and n["i"] == 2

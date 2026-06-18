@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.request
@@ -106,27 +107,69 @@ def _parse_response(data: dict) -> dict:
     }
 
 
-def judge(text: str, timeout: float = 20.0) -> dict:
-    """텍스트를 LLM에게 인젝션 여부로 묻는다. 키 없거나 실패하면 막지 않고 보류로 degrade.
+# ── 응답 캐시 — 동일 입력 반복 시 API 비용·지연 절감 ──────────
+# 확정 결과(ran=True)만 캐시한다(실패·보류를 캐시하면 재시도가 막히므로). 프로세스 메모리 FIFO.
+_CACHE_MAX = 512
+_judge_cache: dict = {}
+_judge_order: list = []
 
-    Returns:
-        available(키 유무)·ran(실제 호출 여부)·is_injection·confidence·categories·reason 등.
-        키 없음 → {available: False}. 네트워크/인증/거부/파싱 실패 → inconclusive=True.
-    """
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        return {"available": False, "ran": False,
-                "note": "ANTHROPIC_API_KEY 미설정 — LLM 레이어 꺼짐(룰 단독)."}
+
+def _cache_enabled() -> bool:
+    return os.environ.get("SECURITY_MCP_LLM_CACHE", "1").lower() not in ("0", "false", "no")
+
+
+def _cache_key(text: str) -> str:
+    return hashlib.sha256(f"{_model()}\x00{text}".encode("utf-8")).hexdigest()
+
+
+def _cache_put(k: str, v: dict) -> None:
+    if k in _judge_cache:
+        return
+    _judge_cache[k] = v
+    _judge_order.append(k)
+    if len(_judge_order) > _CACHE_MAX:
+        _judge_cache.pop(_judge_order.pop(0), None)
+
+
+def _cache_clear() -> None:
+    _judge_cache.clear()
+    _judge_order.clear()
+
+
+def _call_api(text: str, key: str, timeout: float) -> dict:
+    """Messages API POST(네트워크). 캐시/오류처리와 분리해 테스트에서 monkeypatch 가능."""
     body = json.dumps(_build_payload(text)).encode("utf-8")
     req = urllib.request.Request(
         API_URL, data=body, method="POST",
         headers={"x-api-key": key, "anthropic-version": "2023-06-01",
                  "content-type": "application/json"},
     )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def judge(text: str, timeout: float = 20.0) -> dict:
+    """텍스트를 LLM에게 인젝션 여부로 묻는다. 키 없거나 실패하면 막지 않고 보류로 degrade.
+
+    동일 입력은 응답 캐시로 API 호출을 건너뛴다(SECURITY_MCP_LLM_CACHE=0이면 비활성).
+
+    Returns:
+        available(키 유무)·ran(실제 호출 여부)·is_injection·confidence·categories·reason 등.
+        캐시 적중 시 cached=True. 키 없음 → {available: False}. 실패 → inconclusive=True.
+    """
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        return {"available": False, "ran": False,
+                "note": "ANTHROPIC_API_KEY 미설정 — LLM 레이어 꺼짐(룰 단독)."}
+    ck = _cache_key(text) if _cache_enabled() else None
+    if ck is not None and ck in _judge_cache:
+        return {**_judge_cache[ck], "cached": True}
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.load(r)
+        data = _call_api(text, key, timeout)
     except Exception as e:  # noqa: BLE001 — 인증/네트워크/HTTP 오류 전부 보류로 강등
         return {"available": True, "ran": False, "inconclusive": True,
                 "error": str(e), "reason": "LLM 호출 실패(네트워크/인증) — 결과 보류."}
-    return _parse_response(data)
+    result = _parse_response(data)
+    if ck is not None and result.get("ran"):  # 확정 결과만 캐시(실패·보류는 제외)
+        _cache_put(ck, result)
+    return result

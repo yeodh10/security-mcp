@@ -18,6 +18,8 @@ NVD의 심각도(CVSS)는 '얼마나 심각할 수 있나'지 '지금 실제로 
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -26,9 +28,37 @@ KEV_FEED = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulne
 EPSS_API = "https://api.first.org/data/v1/epss"
 _UA = {"User-Agent": "security-mcp/1.0"}
 
-# KEV 카탈로그는 ~1MB대라 매번 받지 않고 캐시한다(프로세스 수명 동안, TTL 6시간).
+# KEV 카탈로그는 ~1MB대라 매번 받지 않고 캐시한다. 메모리(프로세스 수명) + 디스크(재시작 생존), TTL 6시간.
 _KEV_TTL = 6 * 3600
 _kev_cache: dict = {"fetched_at": 0.0, "by_id": None}
+
+
+def _kev_cache_path() -> str:
+    base = os.environ.get("SECURITY_MCP_CACHE_DIR") or tempfile.gettempdir()
+    return os.path.join(base, "security-mcp-kev.json")
+
+
+def _read_disk_kev():
+    """디스크 캐시를 (catalog, age_seconds)로. 없거나 깨졌으면 None."""
+    path = _kev_cache_path()
+    try:
+        age = time.time() - os.path.getmtime(path)
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f), age
+    except (OSError, ValueError):
+        return None
+
+
+def _write_disk_kev(catalog: dict) -> None:
+    """원자적 교체로 디스크에 기록. 실패해도 치명적 아님(메모리 캐시는 유지)."""
+    path = _kev_cache_path()
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(catalog, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 def _fetch_json(url: str, attempts: int = 3) -> dict:
@@ -65,12 +95,28 @@ def _parse_kev(catalog: dict, cve_id: str) -> dict:
 
 
 def _kev_catalog() -> dict:
+    """메모리 → 디스크(신선) → 네트워크 → 디스크(stale 폴백) 순으로 KEV 카탈로그를 얻는다."""
     now = time.time()
-    if _kev_cache["by_id"] is None or (now - _kev_cache["fetched_at"]) > _KEV_TTL:
+    # 1) 메모리 신선
+    if _kev_cache["by_id"] is not None and (now - _kev_cache["fetched_at"]) <= _KEV_TTL:
+        return _kev_cache["by_id"]
+    # 2) 디스크 신선 → 메모리로 승격
+    disk = _read_disk_kev()
+    if disk is not None and disk[1] <= _KEV_TTL:
+        _kev_cache["by_id"], _kev_cache["fetched_at"] = disk[0], now - disk[1]
+        return disk[0]
+    # 3) 네트워크
+    try:
         catalog = _fetch_json(KEV_FEED)
-        _kev_cache["by_id"] = catalog
-        _kev_cache["fetched_at"] = now
-    return _kev_cache["by_id"]
+    except RuntimeError:
+        # 4) 네트워크 실패 → stale 디스크라도 사용(가용성 우선)
+        if disk is not None:
+            _kev_cache["by_id"], _kev_cache["fetched_at"] = disk[0], now
+            return disk[0]
+        raise
+    _kev_cache["by_id"], _kev_cache["fetched_at"] = catalog, now
+    _write_disk_kev(catalog)
+    return catalog
 
 
 def kev_status(cve_id: str) -> dict:
