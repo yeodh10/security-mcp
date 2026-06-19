@@ -61,6 +61,9 @@ pip install -r requirements.txt                    # = mcp 만
 
 ## 🌐 원격 배포 (Streamable HTTP + Bearer 인증)
 
+> 🟢 **라이브 데모:** Render에 배포됨 — `https://security-mcp-0wux.onrender.com/mcp`
+> (공개 검증: `/healthz` → 200, 토큰 없는 `/mcp` → **401**. 실제 호출엔 발급된 `Authorization: Bearer <토큰>` 필요.)
+
 로컬 stdio 외에, **인증이 붙은 원격 HTTP MCP 서버**로도 띄울 수 있습니다(환경변수만으로 전환, 코드 변경 없음):
 ```bash
 SECURITY_MCP_TRANSPORT=streamable-http \
@@ -91,7 +94,7 @@ docker run -p 8000:8000 -e SECURITY_MCP_TOKEN=$(openssl rand -hex 24) security-m
 2. 배포되면 엔드포인트는 `https://<service>.onrender.com/mcp` (TLS 자동).
 3. `SECURITY_MCP_TOKEN`은 Render가 **자동 생성** → 대시보드 Environment에서 값을 복사해 클라이언트의 `Authorization: Bearer`에 사용.
 
-> **정직:** Dockerfile/`render.yaml`은 제공하지만 *빌드·실제 배포는 본인 호스팅 계정에서* 하는 단계라 이 repo에선 미검증입니다(컨테이너가 실행할 HTTP 런타임 자체는 `smoke_http.py`로 라이브 검증됨). Fly.io·Railway·VPS 등 다른 호스트에도 같은 이미지로 올릴 수 있습니다.
+> **검증:** Render에 **실제 배포돼 라이브 동작** — 공개 엔드포인트로 `/healthz`→200·무토큰 `/mcp`→401 확인. 인증 핸드셰이크(토큰 발급 후 list_tools)는 동일 코드 경로를 `smoke_http.py`로 라이브 검증. Fly.io·Railway·VPS 등 다른 호스트에도 같은 이미지로 올릴 수 있습니다.
 
 ## 🧪 검증
 

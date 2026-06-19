@@ -1,9 +1,9 @@
 {
-  "_comment": "원격(Streamable HTTP) 모드로 띄운 서버에 Claude Code가 붙는 예시. 서버는 SECURITY_MCP_TRANSPORT=streamable-http SECURITY_MCP_TOKEN=<토큰> 으로 실행. url의 호스트/포트와 Authorization 토큰을 실제 값으로 바꿔 사용. (로컬 stdio는 .mcp.json 참고.)",
+  "_comment": "원격(Streamable HTTP) MCP 서버에 Claude Code가 붙는 예시. url은 Render 라이브 배포 주소. Authorization 토큰은 Render 대시보드 Environment의 SECURITY_MCP_TOKEN(자동 생성) 값으로 바꿔서 사용 — 절대 커밋하지 말 것(공개 repo 유출). 로컬에서 띄울 땐 url을 http://127.0.0.1:8000/mcp 로. (로컬 stdio는 .mcp.json 참고.)",
   "mcpServers": {
     "security-tools-remote": {
       "type": "http",
-      "url": "http://127.0.0.1:8000/mcp",
+      "url": "https://security-mcp-0wux.onrender.com/mcp",
       "headers": {
         "Authorization": "Bearer CHANGE_ME_SHARED_TOKEN"
       }
