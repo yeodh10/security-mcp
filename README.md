@@ -84,8 +84,10 @@ docker run -p 8000:8000 -e SECURITY_MCP_TOKEN=$(openssl rand -hex 24) security-m
 `/healthz` 기반 HEALTHCHECK·비루트 실행 포함. 포트는 `SECURITY_MCP_PORT > PORT > 8000` 순으로 해석해 PaaS 호환.
 
 ### ☁️ Render 한 방 배포 (`render.yaml`)
-공개 HTTPS URL이 자동으로 붙는 가장 쉬운 경로:
-1. 이 repo를 GitHub에 둔 상태로 **Render → New + → Blueprint → 이 repo 선택**.
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/yeodh10/security-mcp)
+
+위 버튼이 `render.yaml`을 읽어 블루프린트를 세팅합니다(로그인 + 확인 클릭이면 끝). 또는 수동으로:
+1. **Render → New + → Blueprint → 이 repo 선택**.
 2. 배포되면 엔드포인트는 `https://<service>.onrender.com/mcp` (TLS 자동).
 3. `SECURITY_MCP_TOKEN`은 Render가 **자동 생성** → 대시보드 Environment에서 값을 복사해 클라이언트의 `Authorization: Bearer`에 사용.
 
