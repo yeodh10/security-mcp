@@ -13,34 +13,46 @@ from __future__ import annotations
 
 import re
 
-_SPLIT = re.compile(r"[.\-_+]")
+_SPLIT = re.compile(r"[._+]")  # '-'는 prerelease 구분자로 따로 처리
 _NUMTAIL = re.compile(r"^(\d+)([A-Za-z].*)?$")
 
 
 def parse_version(v) -> tuple:
-    """'10.6.26' → 비교 가능한 튜플. 숫자는 숫자대로, 비숫자는 뒤로 정렬되게."""
+    """'10.6.26' → 비교 키 (release_nums, no_prerelease, prerelease).
+
+    release(숫자)를 먼저 비교하고, 같으면 prerelease 없는 쪽(정식 릴리스)이 더 크다
+    (semver: 1.0.0 > 1.0.0-rc1). prerelease는 점-구분 토큰의 사전식 비교.
+    """
     if v is None:
-        return ()
-    out = []
-    for part in _SPLIT.split(str(v).strip()):
+        return ((), 1, ())
+    s = str(v).strip().lower()
+    pre = ""
+    if "-" in s:                       # semver prerelease: 1.0.0-rc1
+        s, pre = s.split("-", 1)
+    nums = []
+    for part in _SPLIT.split(s):
         if part == "":
             continue
         m = _NUMTAIL.match(part)
         if m:
-            out.append((0, int(m.group(1)), m.group(2) or ""))
-        else:
-            out.append((1, 0, part.lower()))
-    return tuple(out)
+            nums.append(int(m.group(1)))
+            if m.group(2):             # 숫자에 붙은 문자 = prerelease (예: 1rc1)
+                pre = f"{pre}.{m.group(2)}" if pre else m.group(2)
+        else:                          # 순수 비숫자 토큰도 prerelease로 취급
+            pre = f"{pre}.{part}" if pre else part
+    no_pre = 0 if pre else 1           # prerelease 없으면(정식) 더 높게 정렬
+    return (tuple(nums), no_pre, tuple(pre.split(".")) if pre else ())
 
 
 def cmp_version(a, b) -> int:
-    """a<b → -1, a==b → 0, a>b → 1 (길이 다르면 짧은 쪽을 0으로 패딩)."""
-    pa, pb = list(parse_version(a)), list(parse_version(b))
-    pad = (0, 0, "")
-    n = max(len(pa), len(pb))
-    pa += [pad] * (n - len(pa))
-    pb += [pad] * (n - len(pb))
-    return (pa > pb) - (pa < pb)
+    """a<b → -1, a==b → 0, a>b → 1. release 숫자는 짧은 쪽을 0으로 패딩."""
+    na, fa, pa = parse_version(a)
+    nb, fb, pb = parse_version(b)
+    n = max(len(na), len(nb))
+    na += (0,) * (n - len(na))
+    nb += (0,) * (n - len(nb))
+    ka, kb = (na, fa, pa), (nb, fb, pb)
+    return (ka > kb) - (ka < kb)
 
 
 def is_affected(user_version, rng: dict):

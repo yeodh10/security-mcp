@@ -67,6 +67,15 @@ def test_check_version_offline(monkeypatch):
     assert server.check_cve_affects_version("CVE-TEST-1", "nginx", "1.0")["affected"] is None  # 제품 불일치
 
 
+def test_version_prerelease_ordering():
+    from versions import cmp_version
+    assert cmp_version("1.0.0", "1.0.0-rc1") == 1      # 정식 릴리스 > prerelease
+    assert cmp_version("1.0.0-rc1", "1.0.0") == -1
+    assert cmp_version("1.0a", "1.0.0") == -1           # 붙은 prerelease도 더 낮게
+    assert cmp_version("1.0.0-rc1", "1.0.0-rc2") == -1  # prerelease 간 사전식
+    assert cmp_version("10.6.26", "10.6.5") == 1        # 순수 숫자 비교 유지
+
+
 def test_lookup_cve_handles_missing(monkeypatch):
     monkeypatch.setattr(cve, "lookup", lambda cid: {"error": "없음"})
     assert "error" in server.lookup_cve("CVE-NOPE")

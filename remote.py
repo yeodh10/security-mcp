@@ -127,6 +127,10 @@ class RateLimiter:
             start, count = now, 0
         count += 1
         self._buckets[key] = (start, count)
+        # 만료 버킷 정리 — 분산 IP 대량 유입 시 dict 무한 증가(메모리 고갈) 방지.
+        if len(self._buckets) > 10000:
+            self._buckets = {k: (s, c) for k, (s, c) in self._buckets.items()
+                             if now - s < self.window}
         return count <= self.limit
 
 
